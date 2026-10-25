@@ -41,7 +41,7 @@ from core.comparison import (EVAL_SEEDS, TUNE_SEEDS, aggregate,  # noqa: E402
                              compare_policies)
 from core.episode_metrics import (prb_demand, saturation, summarize,  # noqa: E402
                                   violation_events)
-from core.simulation import run_episode  # noqa: E402
+from core.simulation import arrival_traces, run_episode  # noqa: E402
 
 OUT = ROOT / "results"
 FIG = OUT / "figures"
@@ -142,10 +142,14 @@ def section_t0_t1(md, paper):
     md.append("Counterfactual on the recorded arrivals (identical traffic for all policies):\n")
     md.append(md_table(["policy", "violations", "URLLC at t", "eMBB at t"], out))
     cfg = get_config("csv_repro")
-    fresh = [[p, sum(map(len, violation_events(run_episode(cfg, 42, p)).values()))]
-             for p in ("static", "meta")]
-    md.append("\nFresh per-slice sample of the same workload (`csv_repro`, seed 42, "
-              "new meta): " + ", ".join(f"{p} = {v}" for p, v in fresh) + ".\n")
+    fresh = {POLICY_LABEL[p]: sum(map(len, violation_events(
+                 run_episode(with_meta(cfg, meta), 42, pol)).values()))
+             for p, pol, meta in [("static", "static", FIXED_META),
+                                  ("meta_legacy", "meta", LEGACY_META),
+                                  ("meta_fixed", "meta", FIXED_META)]}
+    md.append("\nFresh per-slice sample of the same workload (`csv_repro`, seed 42): "
+              + ", ".join(f"{p} = {v}" for p, v in fresh.items()) + ".\n")
+    return fresh
 
 
 def section_t2(md):
@@ -154,6 +158,11 @@ def section_t2(md):
     grid = split_grid()
     extra = [(46, 44, 10), (49, 42, 9), (45, 40, 15), (50, 40, 10), (40, 40, 20)]
     ev = grid_evaluate(cfg, traces, grid + [s for s in extra if s not in grid])
+    with open(OUT / "t2_split_table.csv", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["urllc", "embb", "iot", "on_grid", "violations", "drops"])
+        for s in sorted(ev, key=lambda s: (ev[s][0], ev[s][1], s)):
+            w.writerow([*s, s in grid, *ev[s]])
     zero = sorted(s for s, (v, _) in ev.items() if v == 0)
     off_grid = [s for s in zero if s not in grid]
     md.append("## T2 – fixed-split sweep on the paper trace (static policy)\n")
@@ -165,7 +174,9 @@ def section_t2(md):
     md.append(md_table(["split u/e/i", "violations", "drops"], rows))
     md.append("\nThe paper's 57.14 % = (7 − 3)/7 compares the meta-scheduler with the "
               f"40/40/20 split only; {len(zero) - len(off_grid)} grid splits and "
-              f"{len(off_grid)} listed off-grid splits give 0 violations on the same trace.\n")
+              f"{len(off_grid)} listed off-grid splits give 0 violations on the same trace. "
+              "All splits: `results/t2_split_table.csv`.\n")
+    return best[0]
 
 
 def section_t4(md):
@@ -256,9 +267,12 @@ def section_t5(md, summary_rows):
             exp = EXPECTED.get((name, p))
             if exp is not None and abs(a["viol_total"][0] - exp) > 0.005:
                 inside = a["viol_total"][1] <= exp <= a["viol_total"][2]
+                reason = RNG_REASON if inside else (
+                    "outside our 95 % CI, so not explained by sampling alone; the cause "
+                    "(e.g. a replica implementation difference) was not investigated")
                 deviations.append(f"{name} / {p}: {fmt_ci(a['viol_total'])} violations vs "
                                   f"expected {exp} ({'inside' if inside else 'OUTSIDE'} "
-                                  f"our CI) – {RNG_REASON}.")
+                                  f"our CI) – {reason}.")
             exp = EXPECTED_IOT_DROPS.get((name, p))
             if exp is not None:
                 deviations.append(f"{name} / {p}: IoT drops {a['drops_IoT'][0]:.0f} vs "
@@ -336,7 +350,8 @@ def section_paper_tables(md, paper):
                         "drops", "violations"], rows))
 
     md.append("\n## Table 6 – static vs meta on the same trace (paper trace, seed 42)\n")
-    kpis = {p: summarize(paper[p]) for p in ("static", "meta_legacy", "meta_fixed")}
+    kpis = {p: summarize(paper[p]) for p in ("static", "best_static", "meta_legacy",
+                                             "meta_fixed")}
     base = kpis["static"]["viol_total"]
     rows = []
     for label, key in [("violations (total)", "viol_total"), ("URLLC violations", "viol_URLLC"),
@@ -345,13 +360,15 @@ def section_paper_tables(md, paper):
                        ("IoT avg latency", "avg_latency_IoT"), ("PRB changes", "prb_changes")]:
         rows.append([label] + [f"{kpis[p][key]:.2f}" if isinstance(kpis[p][key], float)
                                else kpis[p][key] for p in kpis])
-    rows.append(["violation reduction vs static"] + ["–"] + [
+    rows.append(["violation reduction vs static 40/40/20"] + ["–"] + [
         f"{(base - kpis[p]['viol_total']) / base:.2%}" if base else "n/a"
-        for p in ("meta_legacy", "meta_fixed")])
-    md.append(md_table(["metric", "static 40/40/20", "current meta (legacy)",
-                        "new meta (fixed)"], rows))
-    md.append("\nThe static column is the same-trace counterfactual. 40/40/20 is one of "
-              "184 fixed splits; T2 shows many give 0 violations on this trace.\n")
+        for p in ("best_static", "meta_legacy", "meta_fixed")])
+    best = "/".join(str(m.allocated_prbs) for m in paper["best_static"][0])
+    md.append(md_table(["metric", "static 40/40/20", f"best fixed split {best} (hindsight)",
+                        "current meta (legacy)", "new meta (fixed)"], rows))
+    md.append("\nBoth static columns are same-trace counterfactuals. 40/40/20 is one of "
+              "184 fixed splits; the hindsight-best split also reaches 0 violations, so "
+              "a reduction vs 40/40/20 is a reduction vs an untuned baseline.\n")
 
     md.append("## Table 7 – SLA violation events (paper trace)\n")
     th = {s["name"]: s["sla_threshold"] for s in cfg["slices"]}
@@ -367,6 +384,76 @@ def section_paper_tables(md, paper):
     md.append(md_table(["policy", "t", "slice", "value", "threshold", "PRBs", "queue"],
                        rows or [["–"] * 7]))
     md.append("")
+
+
+def section_conclusion(md, aggs):
+    """T6 verdict and claim options, computed from the T5/T6 aggregates."""
+    def m(w, p, k="viol_total"):
+        return aggs[w][p][k]
+
+    # Traffic-free baseline: the split read off the SLA parameters alone.
+    rows = []
+    for name in ("feasible", "regime", "anticorr", "t6_reliability"):
+        cfg = get_config(name)
+        res = [static_safe_reservation(c, cfg["sla_mode"]) for c in cfg["slices"]]
+        if None in res:
+            res = [45 if r is None else r for r in res]   # t6: URLLC loss-free → no R
+        split = (res[0], res[1], 100 - res[0] - res[1])
+        viol = [grid_evaluate(cfg, arrival_traces(cfg, s), [split])[split][0]
+                for s in EVAL_SEEDS]
+        rows.append([name, "/".join(map(str, split)), f"{sum(viol) / len(viol):.2f}",
+                     fmt_ci(m(name, "tuned_static")), fmt_ci(m(name, "meta_fixed"))])
+
+    md.append("## Conclusion for T6 and options for the paper's claim\n")
+    md.append("**No workload was found where the new meta-scheduler beats the best fixed "
+              "split.** One workload was pre-registered (`t6_reliability`) and one post-hoc "
+              "allocator variant was tried (`throughput_reservation=\"backlogged\"`, 27.80 "
+              "[24.60, 31.00]); both lose to tuned static "
+              f"({fmt_ci(m('t6_reliability', 'tuned_static'))}).\n")
+    md.append("Why: with queue-capped latency SLAs and demand-aware throughput SLAs, every "
+              "slice has a static-safe reservation, and a split at those reservations needs "
+              "no traffic knowledge at all:\n")
+    md.append(md_table(["workload", "split from SLA parameters only", "mean violations",
+                        "tuned static", "new meta"], rows))
+    md.append("\n(For `t6_reliability` URLLC has no safe reservation; 45 is used.) So "
+              "\"meta avoids tuning\" does not hold here: the tuned split is the "
+              "reservation split.\n")
+    md.append("\"Equal SLA, better efficiency\" does not hold either. New meta has more "
+              "violations than tuned static in W2 "
+              f"({fmt_ci(m('feasible', 'meta_fixed'))} vs {fmt_ci(m('feasible', 'tuned_static'))}), "
+              f"W3 ({fmt_ci(m('regime', 'meta_fixed'))} vs {fmt_ci(m('regime', 'tuned_static'))}) "
+              f"and W4 ({fmt_ci(m('anticorr', 'meta_fixed'))} vs "
+              f"{fmt_ci(m('anticorr', 'tuned_static'))}). It is a trade-off: fewer total "
+              "drops and better IoT service in W1–W3, at a small violation cost. Exceptions: "
+              f"W4 IoT served/ts {m('anticorr', 'meta_fixed', 'served_per_ts_IoT')[0]:.2f} vs "
+              f"{m('anticorr', 'tuned_static', 'served_per_ts_IoT')[0]:.2f}; T6 total drops "
+              f"{m('t6_reliability', 'meta_fixed', 'drops_total')[0]:.0f} vs "
+              f"{m('t6_reliability', 'tuned_static', 'drops_total')[0]:.0f}.\n")
+    md.append("Claims the data supports (pick one; each needs the stated qualifier):\n")
+    md.append(f"1. **Versus an untuned split.** New meta vs static 40/40/20: W2 "
+              f"{m('feasible', 'meta_fixed')[0]:.2f} vs {m('feasible', 'static')[0]:.2f}, "
+              f"W3 {m('regime', 'meta_fixed')[0]:.2f} vs {m('regime', 'static')[0]:.2f}, "
+              f"W4 {m('anticorr', 'meta_fixed')[0]:.2f} vs {m('anticorr', 'static')[0]:.2f} "
+              "violations/run. Must be labelled as untuned, and should report the "
+              "hindsight/tuned rows next to it.")
+    md.append(f"2. **Best-effort cost at near-equal SLA.** On the paper's overloaded "
+              f"workload (W1), tuned static reaches {m('csv_fitted', 'tuned_static')[0]:.2f} "
+              f"violations by holding IoT at "
+              f"{m('csv_fitted', 'tuned_static', 'served_per_ts_IoT')[0]:.2f} pkts/ts "
+              f"(hindsight: {m('csv_fitted', 'hindsight_static', 'served_per_ts_IoT')[0]:.2f}); "
+              f"new meta serves {m('csv_fitted', 'meta_fixed', 'served_per_ts_IoT')[0]:.2f} "
+              f"pkts/ts at {m('csv_fitted', 'meta_fixed')[0]:.2f} violations. State the "
+              "violation cost.")
+    md.append("3. **An SLA-design finding.** Queue-capped latency SLAs can be met by a "
+              "fixed reservation (URLLC 45 PRBs here), which makes reactive slicing "
+              "unnecessary for them; under a load-dependent SLA (T6, loss-free URLLC) the "
+              "reactive rule loses to a fixed split, which motivates a predictive "
+              "scheduler rather than supporting the reactive one.\n")
+    md.append("Caveats for any of these: meta's floor is 10 while the static grid allows "
+              "IoT = 5; `need_margin` = 1 makes meta reserve 39 + 16 PRBs vs static's "
+              "38 + 15 (the 2-PRB URLLC gap in T6); meta restores toward the untuned "
+              "40/40/20 shares while static is tuned; GBR reservation was adopted after "
+              "the first evaluation pass (selected on tuning seeds only).\n")
 
 
 # ── figures ───────────────────────────────────────────────────────────
@@ -458,15 +545,24 @@ def main():
           "Do not edit by hand; re-run the script.\n"]
     paper, summary_rows = {}, []
 
-    section_t0_t1(md, paper)
-    section_t2(md)
+    fresh = section_t0_t1(md, paper)
+    best = section_t2(md)
+    paper["best_static"] = run_episode(get_config("csv_original"), policy="static",
+                                       static_split=best, traces=recorded_traces()[0])
     section_t4(md)
     section_reservations(md)
     section_reservation_choice(md)
     aggs, deviations = section_t5(md, summary_rows)
     section_t6(md, aggs)
     section_paper_tables(md, paper)
+    section_conclusion(md, aggs)
 
+    deviations.insert(0, "T1, `csv_repro` seed 42 (per-slice streams): "
+                      + ", ".join(f"{p} = {v}" for p, v in fresh.items())
+                      + " vs expected static 7 / meta 3 – the expected values match the "
+                      "recorded paper trace exactly (T0/T1 table above); the per-slice "
+                      "sample is a different draw, on which legacy meta is worse than "
+                      "static.")
     md.append("## Deviations from the replica's expected values\n")
     md.append("\n".join(f"- {d}" for d in deviations) or "None.")
     md.append("")
@@ -485,7 +581,7 @@ def main():
     for name in ("csv_original", "checked_in"):
         save_config(get_config(name))
     save_config(with_meta(get_config("csv_original"), FIXED_META), "__meta_fixed")
-    make_figures(paper, "paper_trace", get_config("csv_original"))
+    make_figures({p: paper[p] for p in COLORS}, "paper_trace", get_config("csv_original"))
     t6 = get_config("t6_reliability")
     make_figures({"static": run_episode(t6, 400, "static", static_split=(47, 38, 15)),
                   "meta_legacy": run_episode(with_meta(t6, LEGACY_META), 400, "meta"),

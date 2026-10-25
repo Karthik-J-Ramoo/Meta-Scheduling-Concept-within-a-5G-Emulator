@@ -60,8 +60,9 @@ def parse_args() -> argparse.Namespace:
         help="Named experiment config (config/experiments.py)",
     )
     p.add_argument(
-        "--policy", default="meta", choices=POLICIES,
-        help="PRB allocation policy: static initial shares or the meta-scheduler",
+        "--policy", default=None, choices=POLICIES,
+        help="PRB allocation policy: static initial shares or the meta-scheduler "
+             "(default: the config's 'policy', else meta)",
     )
     p.add_argument(
         "--steps", type=int, default=None,
@@ -150,7 +151,8 @@ def main() -> None:
     # Logging must be set up before any module-level logger is used.
     setup_logger()
 
-    run_simulation(cfg, policy=args.policy, num_steps=num_steps, seed=seed)
+    policy = args.policy or cfg.get("policy", "meta")
+    run_simulation(cfg, policy=policy, num_steps=num_steps, seed=seed)
 
 
 if __name__ == "__main__":
