@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import copy
 
-from config.simulation_config import SIMULATION, SLICES
+from config.simulation_config import META_SCHEDULER, SIMULATION, SLICES
 
 
-def _slice(name, slice_type, initial, cap, rate, sla_type, thr, lam, p_b, m):
+def _slice(name, slice_type, initial, cap, rate, sla_type, thr, lam, p_b, m, phases=None):
+    traffic = {"mean_arrival": lam, "burst_prob": p_b, "burst_mult": m}
+    if phases:
+        traffic["phases"] = phases
     return {
         "name": name,
         "slice_type": slice_type,
@@ -33,7 +36,7 @@ def _slice(name, slice_type, initial, cap, rate, sla_type, thr, lam, p_b, m):
         "service_rate": rate,
         "sla_type": sla_type,
         "sla_threshold": thr,
-        "traffic_params": {"mean_arrival": lam, "burst_prob": p_b, "burst_mult": m},
+        "traffic_params": traffic,
     }
 
 
@@ -44,6 +47,9 @@ LEGACY_META: dict = {
     "fairness_decay": 0.02,
     "min_prbs_per_slice": 5,
 }
+
+# Fixed allocator with the paper Table 3 parameters.
+FIXED_META: dict = dict(META_SCHEDULER)
 
 
 CONFIGS: dict[str, dict] = {
@@ -81,7 +87,58 @@ CONFIGS["csv_repro"] = {
     **copy.deepcopy(CONFIGS["csv_original"]),
     "description": "csv_original workload, per-slice RNG streams (policy-independent arrivals).",
     "rng_mode": "per_slice",
+    "meta": dict(FIXED_META),
 }
+
+# Checked-in workload with per-slice streams (multi-seed baseline).
+CONFIGS["checked_in_ps"] = {
+    **copy.deepcopy(CONFIGS["checked_in"]),
+    "description": "checked_in workload, per-slice RNG streams.",
+    "rng_mode": "per_slice",
+    "meta": dict(FIXED_META),
+}
+
+
+def _workload(description, sla_mode, urllc, embb, iot, embb_thr=38.0,
+              iot_sla=("relaxed", 0.0)):
+    """Three-slice workload; urllc/embb/iot = (lam, p_b, m[, phases])."""
+    return {
+        "description": description,
+        "simulation": {"total_prbs": 100, "num_timesteps": 200, "random_seed": 42},
+        "rng_mode": "per_slice",
+        "sla_mode": sla_mode,
+        "slices": [
+            _slice("URLLC", "urllc", 40, 200, 1.5, "latency", 2.0, *urllc),
+            _slice("eMBB", "embb", 40, 500, 1.0, "throughput", embb_thr, *embb),
+            _slice("IoT", "iot", 20, 300, 0.8, *iot_sla, *iot),
+        ],
+        "meta": dict(FIXED_META),
+    }
+
+
+# W1 – parameters fitted to the paper CSV by an external replica.
+CONFIGS["csv_fitted"] = _workload(
+    "W1: CSV-fitted workload (overloaded, mean demand 123.6 PRBs).", "legacy",
+    (32, 0.21, 3.5), (48, 0.19, 2.8), (17.5, 0.155, 2.4))
+
+# W2 – feasible stationary load (mean demand 90.7 PRBs).
+CONFIGS["feasible"] = _workload(
+    "W2: feasible stationary workload, demand-aware eMBB SLA.", "demand_aware",
+    (32, 0.21, 3.5), (32, 0.19, 2.8), (10, 0.155, 2.4))
+
+# W3 – regime shifts on W2.
+CONFIGS["regime"] = _workload(
+    "W3: W2 with regime shifts at t=70 and t=140.", "demand_aware",
+    (32, 0.21, 3.5, [[0, 1.0], [70, 1.5], [140, 0.8]]),
+    (32, 0.19, 2.8, [[0, 1.0], [70, 0.7], [140, 1.15]]),
+    (10, 0.155, 2.4, [[0, 1.0], [70, 1.0], [140, 1.6]]))
+
+# W4 – anti-correlated URLLC / eMBB phases on W2.
+CONFIGS["anticorr"] = _workload(
+    "W4: W2 with anti-correlated URLLC/eMBB phases every 50 steps.", "demand_aware",
+    (32, 0.21, 3.5, [[0, 1.0], [50, 1.8], [100, 0.6], [150, 1.8]]),
+    (32, 0.19, 2.8, [[0, 1.0], [50, 0.5], [100, 1.4], [150, 0.5]]),
+    (10, 0.155, 2.4))
 
 
 def get_config(name: str) -> dict:
