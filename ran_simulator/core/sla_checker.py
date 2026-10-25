@@ -118,7 +118,12 @@ class SLAChecker:
           demand_aware: violated when ``offered >= sla_threshold`` and
           ``served < sla_threshold``
         * **relaxed**    – never violated (IoT best-effort)
+        * optional ``sla_drop_cap`` (any type) – also violated when
+          ``dropped > sla_drop_cap × offered`` (reliability)
         """
+        if s.sla_drop_cap is not None and snap.dropped > s.sla_drop_cap * self.offered(snap):
+            return True
+
         if s.sla_type == "latency":
             return snap.latency > s.sla_threshold
 

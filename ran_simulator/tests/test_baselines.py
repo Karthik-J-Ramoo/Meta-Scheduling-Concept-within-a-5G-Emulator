@@ -38,3 +38,52 @@ def test_fixed_splits_on_paper_trace():
     assert [ev[s][0] for s in splits] == [0, 0, 0, 0, 7]
     grid_ev = grid_evaluate(cfg, traces, GRID)
     assert grid_ev[best_split([grid_ev])][0] == 0
+
+
+# ── static-safe reservation theorem ──────────────────────────────────
+
+from core.baselines import phase_requirements, static_safe_reservation  # noqa: E402
+
+
+def test_reservations_for_paper_slas():
+    cfg = get_config("feasible")
+    r = [static_safe_reservation(c, cfg["sla_mode"]) for c in cfg["slices"]]
+    assert r == [45, 38, 0]
+    urllc = cfg["slices"][0]
+    assert (200 - 66) / 66 > 2.0       # P = 44: worst-case latency 2.03 ms
+    # legacy throughput SLA has no safe reservation
+    assert static_safe_reservation(get_config("csv_fitted")["slices"][1], "legacy") is None
+    # IoT minimum-service 12 pkts/ts at r = 0.8 needs 15 PRBs
+    assert static_safe_reservation(get_config("t6_reliability")["slices"][2], "demand_aware") == 15
+    assert static_safe_reservation(get_config("t6_reliability")["slices"][0], "demand_aware") is None
+    assert urllc["queue_capacity"] == 200
+
+
+def _random_traces(rng, n=200):
+    """Arbitrary per-slice loads, from idle to far beyond capacity."""
+    return [list(rng.poisson(rng.uniform(0, lam_max), size=n)) for lam_max in (300, 600, 200)]
+
+
+@pytest.mark.parametrize("name", ["feasible", "regime", "anticorr"])
+def test_split_at_reservation_never_violates(name):
+    """Any split >= (45, 38, 5) is violation-free under ANY traffic."""
+    import numpy as np
+    cfg, rng = get_config(name), np.random.default_rng(7)
+    for _ in range(30):
+        traces = _random_traces(rng)
+        ev = grid_evaluate(cfg, traces, [(45, 38, 17), (47, 38, 15), (44, 38, 18)])
+        assert ev[(45, 38, 17)][0] == 0 and ev[(47, 38, 15)][0] == 0
+    saturating = [[400] * 200, [0] * 200, [0] * 200]
+    assert grid_evaluate(cfg, saturating, [(44, 38, 18)])[(44, 38, 18)][0] > 0
+
+
+def test_tuned_split_is_smallest_lattice_point_above_reservation():
+    # 47 = first lattice value >= 45, 38 = eMBB reservation, IoT takes the rest
+    assert (47, 38, 15) in GRID and (44, 38, 18) in GRID
+
+
+def test_t6_requirements_peak_above_budget_phases_fit():
+    ph = phase_requirements(get_config("t6_reliability"))
+    peak = {n: max(p["req"][n] for p in ph) for n in ph[0]["req"]}
+    assert sum(peak.values()) > 100                 # no fixed split covers every peak
+    assert max(p["sum"] for p in ph) <= 100          # but every phase fits

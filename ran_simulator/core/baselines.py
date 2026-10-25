@@ -14,6 +14,7 @@ decomposition against full three-slice runs.
 from __future__ import annotations
 
 import copy
+import math
 from typing import Dict, List, Sequence, Tuple
 
 from core.episode_metrics import violation_events
@@ -74,3 +75,67 @@ def best_split(evaluations: Sequence[Dict[Split, Tuple[int, int]]]) -> Split:
                 sum(ev[split][1] for ev in evaluations),
                 split)
     return min(grid, key=key)
+
+
+# ── static-safe reservations ─────────────────────────────────────────
+
+def static_safe_reservation(slice_cfg: dict, sla_mode: str) -> int | None:
+    """
+    Smallest PRB count at which the slice's SLA can never be violated, for
+    *any* arrival sequence; ``None`` if no such count exists (the SLA's
+    requirement depends on load).
+
+    * latency L, capacity C: the backlog after service is at most
+      ``C − floor(P·r)``, so P is safe iff ``(C − floor(P·r)) / (P·r) ≤ L``.
+    * throughput T, demand_aware: safe iff ``floor(P·r) ≥ T`` (and C ≥ T).
+    * throughput T, legacy: violated whenever fewer than T packets are
+      offered, whatever P is → None.
+    * relaxed: 0.
+    * any ``sla_drop_cap``: overflow depends on load → None.
+    """
+    if slice_cfg.get("sla_drop_cap") is not None:
+        return None
+    r, cap = slice_cfg["service_rate"], slice_cfg["queue_capacity"]
+    thr, kind = slice_cfg["sla_threshold"], slice_cfg["sla_type"]
+    if kind == "relaxed":
+        return 0
+    if kind == "throughput" and sla_mode == "legacy":
+        return None
+    for prbs in range(1, 10_000):
+        rate = math.floor(prbs * r)
+        if kind == "latency" and max(0, cap - rate) / (prbs * r) <= thr:
+            return prbs
+        if kind == "throughput" and rate >= thr:
+            return prbs
+    return None
+
+
+def phase_requirements(cfg: dict) -> List[dict]:
+    """
+    Per phase (union of all slices' phase boundaries), the PRBs each slice
+    needs on average to meet its SLA: its mean PRB demand
+    ``lam·(1 − p_b + p_b·m)/r``, capped at its static-safe reservation when
+    one exists (relaxed slices need 0).  Returns
+    ``[{"start", "end", "req": {slice: prbs}, "sum"}]``.
+    """
+    n = cfg["simulation"]["num_timesteps"]
+    bounds = sorted({0, n} | {p[0] for c in cfg["slices"]
+                              for p in c["traffic_params"].get("phases", []) if p[0] < n})
+    out = []
+    for start, end in zip(bounds, bounds[1:]):
+        req = {}
+        for c in cfg["slices"]:
+            tp = c["traffic_params"]
+            mult = 1.0
+            for s, m in sorted(tp.get("phases", [])):
+                if start >= s:
+                    mult = m
+            demand = (tp["mean_arrival"] * mult
+                      * (1 - tp["burst_prob"] + tp["burst_prob"] * tp["burst_mult"])
+                      / c["service_rate"])
+            reserve = static_safe_reservation(c, cfg["sla_mode"])
+            if c["sla_type"] == "relaxed" and c.get("sla_drop_cap") is None:
+                demand = 0.0
+            req[c["name"]] = demand if reserve is None else min(demand, reserve)
+        out.append({"start": start, "end": end, "req": req, "sum": sum(req.values())})
+    return out

@@ -100,9 +100,9 @@ CONFIGS["checked_in_ps"] = {
 
 
 def _workload(description, sla_mode, urllc, embb, iot, embb_thr=38.0,
-              iot_sla=("relaxed", 0.0)):
+              iot_sla=("relaxed", 0.0), urllc_drop_cap=None):
     """Three-slice workload; urllc/embb/iot = (lam, p_b, m[, phases])."""
-    return {
+    cfg = {
         "description": description,
         "simulation": {"total_prbs": 100, "num_timesteps": 200, "random_seed": 42},
         "rng_mode": "per_slice",
@@ -114,6 +114,9 @@ def _workload(description, sla_mode, urllc, embb, iot, embb_thr=38.0,
         ],
         "meta": dict(FIXED_META),
     }
+    if urllc_drop_cap is not None:
+        cfg["slices"][0]["sla_drop_cap"] = urllc_drop_cap
+    return cfg
 
 
 # W1 – parameters fitted to the paper CSV by an external replica.
@@ -148,3 +151,20 @@ def get_config(name: str) -> dict:
     cfg = copy.deepcopy(CONFIGS[name])
     cfg["name"] = name
     return cfg
+
+
+# T6 (pre-registered, see tests/test_t6_workload.py).  Every SLA above has a
+# load-independent static-safe reservation (URLLC 45, eMBB 38, IoT 5), so a
+# fixed split can always reach zero violations.  T6 makes one requirement
+# load-dependent (URLLC must also be loss-free), adds an IoT minimum-service
+# SLA (12 pkts/ts when backlogged), and keeps W4's anti-correlated timing
+# with a lighter eMBB trough (x0.3) so that bursts rarely offer >= 38 pkts.
+CONFIGS["t6_reliability"] = _workload(
+    "T6: anti-correlated phases, URLLC latency + zero loss, IoT min-service 12.",
+    "demand_aware",
+    (32, 0.21, 3.5, [[0, 1.0], [50, 1.8], [100, 0.6], [150, 1.8]]),
+    (32, 0.19, 2.8, [[0, 1.0], [50, 0.3], [100, 1.4], [150, 0.3]]),
+    (10, 0.155, 2.4),
+    iot_sla=("throughput", 12.0),
+    urllc_drop_cap=0.0,
+)

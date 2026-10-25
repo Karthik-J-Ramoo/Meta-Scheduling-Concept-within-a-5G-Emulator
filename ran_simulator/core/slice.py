@@ -81,6 +81,9 @@ class NetworkSlice:
         self.service_rate: float = cfg["service_rate"]
         self.sla_type: str = cfg["sla_type"]
         self.sla_threshold: float = cfg["sla_threshold"]
+        # Optional reliability term: max share of offered packets dropped
+        # per step (0.0 = zero loss).  None → no drop constraint.
+        self.sla_drop_cap: float | None = cfg.get("sla_drop_cap")
         self.initial_prbs: int = cfg["initial_prbs"]
         self.traffic_params: dict = cfg["traffic_params"]
 
