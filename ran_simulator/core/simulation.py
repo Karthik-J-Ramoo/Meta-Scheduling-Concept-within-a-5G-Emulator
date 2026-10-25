@@ -72,6 +72,7 @@ def build_meta_scheduler(cfg: dict) -> MetaScheduler:
         mode=meta["mode"],
         early_warning=meta.get("early_warning"),
         need_margin=meta.get("need_margin", 0),
+        throughput_reservation=meta.get("throughput_reservation", "backlogged"),
     )
 
 

@@ -76,6 +76,10 @@ class MetaScheduler:
         of its threshold.  ``None`` disables it.
     need_margin : int
         Fixed mode: PRBs added to a non-zero SLA requirement.
+    throughput_reservation : str
+        Fixed mode, throughput SLAs: ``"backlogged"`` requires
+        ``ceil(min(T, offered)/r)`` PRBs; ``"always"`` reserves ``ceil(T/r)``
+        regardless of demand (a guaranteed-bit-rate reservation).
 
     ``None`` means "take the value from config.META_SCHEDULER"; an explicit
     0 is honoured.
@@ -92,6 +96,7 @@ class MetaScheduler:
         mode: str | None = None,
         early_warning: Optional[float] = None,
         need_margin: int | None = None,
+        throughput_reservation: str | None = None,
     ) -> None:
         def pick(value, key):
             return META_SCHEDULER[key] if value is None else value
@@ -103,14 +108,18 @@ class MetaScheduler:
         self.mode = pick(mode, "mode")
         self.early_warning = early_warning
         self.need_margin = pick(need_margin, "need_margin")
+        self.throughput_reservation = pick(throughput_reservation, "throughput_reservation")
+        if self.throughput_reservation not in ("backlogged", "always"):
+            raise ValueError(f"bad throughput_reservation {self.throughput_reservation!r}")
         if self.mode not in self.MODES:
             raise ValueError(f"mode must be one of {self.MODES}, got {self.mode!r}")
 
         logger.info(
             "MetaScheduler │ mode=%s  total=%d  step=%d  decay=%.3f  floor=%d  "
-            "early_warning=%s  margin=%d",
+            "early_warning=%s  margin=%d  tput_reservation=%s",
             self.mode, self.total_prbs, self.realloc_step, self.fairness_decay,
             self.min_prbs, self.early_warning, self.need_margin,
+            self.throughput_reservation,
         )
 
     # ── public interface ──────────────────────────────────────────────
@@ -147,6 +156,7 @@ class MetaScheduler:
 
         * latency  L: backlog after service ≤ L·P·r  ⇔  P ≥ offered / (r(1+L))
         * throughput T: serve min(T, offered)        ⇔  P ≥ min(T, offered) / r
+          (``throughput_reservation="always"``: P ≥ T / r)
         * relaxed: 0
         A non-zero requirement gets ``need_margin`` extra PRBs.
         """
@@ -155,7 +165,10 @@ class MetaScheduler:
         if s.sla_type == "latency":
             need = math.ceil(offered / (r * (1.0 + s.sla_threshold)) - 1e-9)
         elif s.sla_type == "throughput":
-            need = math.ceil(min(s.sla_threshold, offered) / r - 1e-9)
+            rate = s.sla_threshold
+            if self.throughput_reservation == "backlogged":
+                rate = min(rate, offered)
+            need = math.ceil(rate / r - 1e-9)
         else:
             need = 0
         return need + self.need_margin if need > 0 else 0

@@ -100,6 +100,9 @@ META_SCHEDULER: dict = {
     "min_prbs_per_slice": 10,   # floor – never starve a slice completely
     "need_margin": 1,           # PRBs added to a non-zero SLA requirement
     "early_warning": 0.5,       # boost URLLC when latency > 0.5 × threshold (None: off)
+    # "always" (GBR) chosen over "backlogged" on tuning seeds 0..19, W2-W4:
+    # summed mean violations 4.15 vs 18.45 (see scripts/run_experiments.py).
+    "throughput_reservation": "always",
 }
 
 # ---------------------------------------------------------------------------
