@@ -25,7 +25,7 @@ from core.simulation import run_episode
 
 # fixture CSV → config that produced it
 FIXTURES = {
-    "metrics_csv_repro.csv": "csv_repro",       # 2.0 ms / 38 pkts (paper run)
+    "metrics_csv_original.csv": "csv_original",       # 2.0 ms / 38 pkts (paper run)
     "metrics_checked_in.csv": "checked_in",     # 5.0 ms / 30 pkts
 }
 

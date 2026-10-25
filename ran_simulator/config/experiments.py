@@ -60,7 +60,7 @@ CONFIGS: dict[str, dict] = {
     # Recovered from the sibling working copy Meta_Scheduling_Test/ (its
     # simulation.log header and config/simulation_config.py). This is the run
     # behind the 2.0 ms / 38 pkts metrics.csv used in the paper draft.
-    "csv_repro": {
+    "csv_original": {
         "description": "Original stress-test run behind the paper CSV (2.0 ms / 38 pkts).",
         "simulation": {"total_prbs": 100, "num_timesteps": 200, "random_seed": 42},
         "rng_mode": "shared",
@@ -72,6 +72,15 @@ CONFIGS: dict[str, dict] = {
         ],
         "meta": dict(LEGACY_META),
     },
+}
+
+
+# Same workload with one RNG stream per slice: arrivals no longer depend on
+# the policy, so static and meta runs see identical traffic (T1).
+CONFIGS["csv_repro"] = {
+    **copy.deepcopy(CONFIGS["csv_original"]),
+    "description": "csv_original workload, per-slice RNG streams (policy-independent arrivals).",
+    "rng_mode": "per_slice",
 }
 
 
