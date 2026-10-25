@@ -20,7 +20,8 @@ For each discrete timestep *t* in ``[0, num_timesteps)``:
        adjusts PRB allocations for the *next* timestep.
 
 This is a **closed-loop control system**: SLA violations feed back into
-resource allocation, which changes future queue dynamics.
+resource allocation, which changes future queue dynamics.  The loop itself
+lives in ``core/simulation.py`` so tests and experiment scripts share it.
 
 Usage
 -----
@@ -28,26 +29,23 @@ Usage
     python main.py                   # run with default config
     python main.py --steps 500       # override timestep count
     python main.py --seed 7          # override random seed
+    python main.py --config csv_repro --policy static
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
 from pathlib import Path
 
-import numpy as np
-
 # ── project imports ───────────────────────────────────────────────────
-from config.simulation_config import SIMULATION, SLICES, LOGGING
-from core.slice import NetworkSlice, SliceMetrics
-from core.traffic_generator import TrafficGenerator
-from core.du_scheduler import DUScheduler
-from core.meta_scheduler import MetaScheduler
-from core.sla_checker import SLAChecker
+from config.experiments import CONFIGS, get_config
+from config.simulation_config import LOGGING
 from core.performance_monitor import PerformanceMonitor, CSV_FIELDS
+from core.simulation import POLICIES, run_episode
 from utils.logger import setup_logger, MetricCSVWriter
 
 
@@ -58,81 +56,61 @@ def parse_args() -> argparse.Namespace:
         description="RAN meta-scheduling simulator",
     )
     p.add_argument(
+        "--config", default="checked_in", choices=sorted(CONFIGS),
+        help="Named experiment config (config/experiments.py)",
+    )
+    p.add_argument(
+        "--policy", default="meta", choices=POLICIES,
+        help="PRB allocation policy: static initial shares or the meta-scheduler",
+    )
+    p.add_argument(
         "--steps", type=int, default=None,
         help="Number of simulation timesteps (overrides config)",
     )
     p.add_argument(
         "--seed", type=int, default=None,
-        help="Random seed (overrides config; None → non-deterministic)",
+        help="Random seed (overrides config)",
     )
     return p.parse_args()
 
 
 # ── simulation ────────────────────────────────────────────────────────
 
-def run_simulation(num_steps: int, seed: int | None) -> None:
+def run_simulation(cfg: dict, policy: str, num_steps: int, seed: int | None) -> None:
     """
-    Execute a full simulation episode.
+    Execute a full simulation episode; write CSV, log and the active config.
 
     Parameters
     ----------
+    cfg : dict
+        Experiment config from ``config.experiments.get_config``.
+    policy : str
+        ``"static"`` or ``"meta"``.
     num_steps : int
         Number of discrete timesteps.
     seed : int | None
         Seed for the numpy RNG.  ``None`` → non-deterministic.
     """
     log = logging.getLogger("main")
+    log.info(
+        "Simulation starts │ config=%s  policy=%s  steps=%d  seed=%s",
+        cfg["name"], policy, num_steps, seed,
+    )
 
-    # ── reproducibility ───────────────────────────────────────────────
-    rng = np.random.default_rng(seed)
-    log.info("Simulation starts │ steps=%d  seed=%s", num_steps, seed)
-
-    # ── build slices ──────────────────────────────────────────────────
-    slices: list[NetworkSlice] = [NetworkSlice(cfg) for cfg in SLICES]
-
-    # ── build components ──────────────────────────────────────────────
-    traffic_gens: list[TrafficGenerator] = [
-        TrafficGenerator(s, rng) for s in slices
-    ]
-    du_scheduler = DUScheduler()
-    meta_scheduler = MetaScheduler()
-    sla_checker = SLAChecker()
+    # Record exactly what produced this run next to its outputs.
+    out_dir = Path(LOGGING["log_dir"])
+    active = {**cfg, "run": {"policy": policy, "seed": seed, "num_steps": num_steps}}
+    (out_dir / "active_config.json").write_text(json.dumps(active, indent=2), encoding="utf-8")
 
     csv_writer = MetricCSVWriter(fieldnames=CSV_FIELDS)
-    monitor = PerformanceMonitor(csv_writer=csv_writer, window=20)
-
-    log.info(
-        "Components ready │ slices=%s",
-        [s.name for s in slices],
-    )
+    monitor = PerformanceMonitor(csv_writer=csv_writer, window=num_steps)
 
     # ── main simulation loop ──────────────────────────────────────────
     wall_start = time.perf_counter()
-
-    for t in range(num_steps):
-
-        # 1. Traffic generation → enqueue
-        for gen, s in zip(traffic_gens, slices):
-            arrivals = gen.generate(timestep=t)
-            s.enqueue(arrivals)
-
-        # 2. DU scheduling → dequeue + compute metrics
-        du_scheduler.schedule(slices, timestep=t)
-
-        # 3. Metric snapshots
-        snapshots: list[SliceMetrics] = [s.snapshot(t) for s in slices]
-
-        # 4. SLA evaluation (stamps snapshots with sla_satisfied)
-        violations, stamped = sla_checker.check_all(slices, snapshots, t)
-
-        # 5. Record to monitor + CSV
-        monitor.record(stamped)
-
-        # 6. Meta-scheduler adjusts PRBs for the NEXT timestep
-        meta_scheduler.allocate(slices, violations, timestep=t)
+    run_episode(cfg, seed=seed, policy=policy, num_steps=num_steps, monitor=monitor)
+    wall_elapsed = time.perf_counter() - wall_start
 
     # ── wrap-up ───────────────────────────────────────────────────────
-    wall_elapsed = time.perf_counter() - wall_start
     monitor.flush()
     monitor.close()
 
@@ -140,7 +118,7 @@ def run_simulation(num_steps: int, seed: int | None) -> None:
     log.info("Simulation complete │ %.2f s wall-clock", wall_elapsed)
     log.info("─" * 72)
 
-    # Pretty-print final summary
+    # Pretty-print final summary (window = whole episode)
     summary = monitor.summary()
     for name, stats in summary.items():
         log.info(
@@ -156,8 +134,8 @@ def run_simulation(num_steps: int, seed: int | None) -> None:
         )
 
     log.info(
-        "Results written to %s/ (CSV + log)",
-        Path(LOGGING["log_dir"]).resolve(),
+        "Results written to %s/ (CSV + log + active_config.json)",
+        out_dir.resolve(),
     )
 
 
@@ -165,13 +143,14 @@ def run_simulation(num_steps: int, seed: int | None) -> None:
 
 def main() -> None:
     args = parse_args()
-    num_steps = args.steps or SIMULATION["num_timesteps"]
-    seed = args.seed if args.seed is not None else SIMULATION["random_seed"]
+    cfg = get_config(args.config)
+    num_steps = args.steps or cfg["simulation"]["num_timesteps"]
+    seed = args.seed if args.seed is not None else cfg["simulation"]["random_seed"]
 
     # Logging must be set up before any module-level logger is used.
     setup_logger()
 
-    run_simulation(num_steps=num_steps, seed=seed)
+    run_simulation(cfg, policy=args.policy, num_steps=num_steps, seed=seed)
 
 
 if __name__ == "__main__":
