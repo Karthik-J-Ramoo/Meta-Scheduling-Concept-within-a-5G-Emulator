@@ -1,4 +1,5 @@
 workload,policy,seed,split,viol_URLLC,viol_eMBB,viol_IoT,viol_total,drops_URLLC,served_per_ts_URLLC,avg_latency_URLLC,drops_eMBB,served_per_ts_eMBB,avg_latency_eMBB,drops_IoT,served_per_ts_IoT,avg_latency_IoT,drops_total,prb_changes
+csv_original_trace,best_static,42,46/44/10,0,0,0,0,17,48.74,0.24282608695652175,3794,44.0,9.829772727272728,2371,8.0,34.511875,6182,0
 csv_original_trace,meta_fixed,42,40/40/20,0,0,0,0,52,48.595,0.29685930644698905,4599,39.935,11.011801282051284,1154,14.095,18.329806857659026,5805,88
 csv_original_trace,meta_legacy,42,40/40/20,2,1,0,3,35,48.68,0.21022634508348795,4279,41.555,10.52149613899614,2184,8.93,32.9424634502924,6498,2
 csv_original_trace,static,42,40/40/20,7,0,0,7,88,48.11,0.46475,4586,40.0,10.991,779,16.0,14.64375,5453,0

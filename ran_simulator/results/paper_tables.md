@@ -14,7 +14,7 @@ Counterfactual on the recorded arrivals (identical traffic for all policies):
 | current meta (legacy) | 3 | [41, 42] | [42] |
 | new meta (fixed) | 0 | – | – |
 
-Fresh per-slice sample of the same workload (`csv_repro`, seed 42, new meta): static = 1, meta = 0.
+Fresh per-slice sample of the same workload (`csv_repro`, seed 42): static 40/40/20 = 1, current meta (legacy) = 2, new meta (fixed) = 0.
 
 ## T2 – fixed-split sweep on the paper trace (static policy)
 
@@ -38,7 +38,7 @@ Grid u, e ∈ 20..70 step 3, i = 100−u−e ≥ 5: 184 splits; 10 of them reach
 | 50/41/9 (grid best) | 0 | 6963 |
 | 50/44/6 (grid best) | 0 | 6966 |
 
-The paper's 57.14 % = (7 − 3)/7 compares the meta-scheduler with the 40/40/20 split only; 10 grid splits and 4 listed off-grid splits give 0 violations on the same trace.
+The paper's 57.14 % = (7 − 3)/7 compares the meta-scheduler with the 40/40/20 split only; 10 grid splits and 4 listed off-grid splits give 0 violations on the same trace. All splits: `results/t2_split_table.csv`.
 
 ## T4 – load audit
 
@@ -216,19 +216,19 @@ Pre-registered criteria: (i) best static CI lower bound > 0 → **met**; (ii) me
 
 ## Table 6 – static vs meta on the same trace (paper trace, seed 42)
 
-| metric | static 40/40/20 | current meta (legacy) | new meta (fixed) |
-|---|---|---|---|
-| violations (total) | 7 | 3 | 0 |
-| URLLC violations | 7 | 2 | 0 |
-| eMBB violations | 0 | 1 | 0 |
-| total drops | 5453 | 6498 | 5805 |
-| IoT drops | 779 | 2184 | 1154 |
-| IoT served/ts | 16.00 | 8.93 | 14.10 |
-| IoT avg latency | 14.64 | 32.94 | 18.33 |
-| PRB changes | 0 | 2 | 88 |
-| violation reduction vs static | – | 57.14% | 100.00% |
+| metric | static 40/40/20 | best fixed split 46/44/10 (hindsight) | current meta (legacy) | new meta (fixed) |
+|---|---|---|---|---|
+| violations (total) | 7 | 0 | 3 | 0 |
+| URLLC violations | 7 | 0 | 2 | 0 |
+| eMBB violations | 0 | 0 | 1 | 0 |
+| total drops | 5453 | 6182 | 6498 | 5805 |
+| IoT drops | 779 | 2371 | 2184 | 1154 |
+| IoT served/ts | 16.00 | 8.00 | 8.93 | 14.10 |
+| IoT avg latency | 14.64 | 34.51 | 32.94 | 18.33 |
+| PRB changes | 0 | 0 | 2 | 88 |
+| violation reduction vs static 40/40/20 | – | 100.00% | 57.14% | 100.00% |
 
-The static column is the same-trace counterfactual. 40/40/20 is one of 184 fixed splits; T2 shows many give 0 violations on this trace.
+Both static columns are same-trace counterfactuals. 40/40/20 is one of 184 fixed splits; the hindsight-best split also reaches 0 violations, so a reduction vs 40/40/20 is a reduction vs an untuned baseline.
 
 ## Table 7 – SLA violation events (paper trace)
 
@@ -245,8 +245,34 @@ The static column is the same-trace counterfactual. 40/40/20 is one of 184 fixed
 | current meta (legacy) | 42 | URLLC | 2.03 | 2.0 | 44 | 134 |
 | current meta (legacy) | 42 | eMBB | 37 | 38.0 | 37 | 463 |
 
+## Conclusion for T6 and options for the paper's claim
+
+**No workload was found where the new meta-scheduler beats the best fixed split.** One workload was pre-registered (`t6_reliability`) and one post-hoc allocator variant was tried (`throughput_reservation="backlogged"`, 27.80 [24.60, 31.00]); both lose to tuned static (19.50 [16.85, 22.25]).
+
+Why: with queue-capped latency SLAs and demand-aware throughput SLAs, every slice has a static-safe reservation, and a split at those reservations needs no traffic knowledge at all:
+
+| workload | split from SLA parameters only | mean violations | tuned static | new meta |
+|---|---|---|---|---|
+| feasible | 45/38/17 | 0.00 | 0.00 [0.00, 0.00] | 0.25 [0.05, 0.50] |
+| regime | 45/38/17 | 0.00 | 0.00 [0.00, 0.00] | 0.55 [0.25, 0.85] |
+| anticorr | 45/38/17 | 0.00 | 0.00 [0.00, 0.00] | 3.75 [3.20, 4.35] |
+| t6_reliability | 45/38/17 | 21.85 | 19.50 [16.85, 22.25] | 23.90 [21.05, 26.90] |
+
+(For `t6_reliability` URLLC has no safe reservation; 45 is used.) So "meta avoids tuning" does not hold here: the tuned split is the reservation split.
+
+"Equal SLA, better efficiency" does not hold either. New meta has more violations than tuned static in W2 (0.25 [0.05, 0.50] vs 0.00 [0.00, 0.00]), W3 (0.55 [0.25, 0.85] vs 0.00 [0.00, 0.00]) and W4 (3.75 [3.20, 4.35] vs 0.00 [0.00, 0.00]). It is a trade-off: fewer total drops and better IoT service in W1–W3, at a small violation cost. Exceptions: W4 IoT served/ts 11.36 vs 11.68; T6 total drops 2479 vs 2302.
+
+Claims the data supports (pick one; each needs the stated qualifier):
+
+1. **Versus an untuned split.** New meta vs static 40/40/20: W2 0.25 vs 8.60, W3 0.55 vs 26.70, W4 3.75 vs 71.00 violations/run. Must be labelled as untuned, and should report the hindsight/tuned rows next to it.
+2. **Best-effort cost at near-equal SLA.** On the paper's overloaded workload (W1), tuned static reaches 0.05 violations by holding IoT at 12.00 pkts/ts (hindsight: 7.00); new meta serves 13.82 pkts/ts at 0.30 violations. State the violation cost.
+3. **An SLA-design finding.** Queue-capped latency SLAs can be met by a fixed reservation (URLLC 45 PRBs here), which makes reactive slicing unnecessary for them; under a load-dependent SLA (T6, loss-free URLLC) the reactive rule loses to a fixed split, which motivates a predictive scheduler rather than supporting the reactive one.
+
+Caveats for any of these: meta's floor is 10 while the static grid allows IoT = 5; `need_margin` = 1 makes meta reserve 39 + 16 PRBs vs static's 38 + 15 (the 2-PRB URLLC gap in T6); meta restores toward the untuned 40/40/20 shares while static is tuned; GBR reservation was adopted after the first evaluation pass (selected on tuning seeds only).
+
 ## Deviations from the replica's expected values
 
+- T1, `csv_repro` seed 42 (per-slice streams): static 40/40/20 = 1, current meta (legacy) = 2, new meta (fixed) = 0 vs expected static 7 / meta 3 – the expected values match the recorded paper trace exactly (T0/T1 table above); the per-slice sample is a different draw, on which legacy meta is worse than static.
 - csv_fitted / static: 8.65 [5.75, 12.40] violations vs expected 8.05 (inside our CI) – per-slice SeedSequence streams draw a different sample of the same workload than the replica's generator.
 - csv_fitted / static: IoT drops 712 vs expected 775 – per-slice SeedSequence streams draw a different sample of the same workload than the replica's generator.
 - csv_fitted / meta_legacy: 3.75 [2.95, 4.50] violations vs expected 3.4 (inside our CI) – per-slice SeedSequence streams draw a different sample of the same workload than the replica's generator.
@@ -259,5 +285,5 @@ The static column is the same-trace counterfactual. 40/40/20 is one of 184 fixed
 - anticorr / static: 71.00 [64.85, 76.75] violations vs expected 73.1 (inside our CI) – per-slice SeedSequence streams draw a different sample of the same workload than the replica's generator.
 - anticorr / meta_legacy: 3.65 [3.20, 4.20] violations vs expected 3.3 (inside our CI) – per-slice SeedSequence streams draw a different sample of the same workload than the replica's generator.
 - checked_in_ps / static: 1.50 [0.80, 2.30] violations vs expected 1.03 (inside our CI) – per-slice SeedSequence streams draw a different sample of the same workload than the replica's generator.
-- checked_in_ps / meta_legacy: 16.45 [11.00, 21.85] violations vs expected 10.7 (OUTSIDE our CI) – per-slice SeedSequence streams draw a different sample of the same workload than the replica's generator.
+- checked_in_ps / meta_legacy: 16.45 [11.00, 21.85] violations vs expected 10.7 (OUTSIDE our CI) – outside our 95 % CI, so not explained by sampling alone; the cause (e.g. a replica implementation difference) was not investigated.
 
