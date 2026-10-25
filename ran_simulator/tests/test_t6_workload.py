@@ -18,6 +18,8 @@ Pass criteria (20 eval seeds 400..419, tuned static tuned on 0..19,
   (i)  lower CI bound of hindsight_static and of tuned_static > 0
   (ii) upper CI bound of meta_fixed < lower CI bound of both
 The meta-scheduler is the frozen default (config.META_SCHEDULER).
+
+Outcome: (i) holds, (ii) does not – see the note on test_ii.
 """
 
 import pytest
@@ -41,6 +43,14 @@ def test_i_best_static_baselines_are_nonzero(agg):
         assert lo > 0, (policy, mean, lo, hi)
 
 
+# Result of the single pre-registered run (2026-10-25): (i) holds – hindsight
+# and tuned static both pick 47/38/15 and score 19.50 [16.85, 22.25] – but
+# (ii) fails: meta_fixed scores 23.90 [21.05, 26.90].  The GBR reservation
+# for eMBB (39) and IoT (16) caps URLLC at 45 PRBs, so meta cannot move the
+# eMBB trough to URLLC.  An exploratory post-hoc run with
+# throughput_reservation="backlogged" scored 27.80 [24.60, 31.00] (worse).
+@pytest.mark.xfail(strict=True, reason="T6 (ii) not met: no workload found where the "
+                   "reactive meta-scheduler beats the best fixed split")
 def test_ii_meta_is_clearly_lower(agg):
     _, _, meta_hi = agg["meta_fixed"]["viol_total"]
     static_lo = min(agg[p]["viol_total"][1] for p in ("hindsight_static", "tuned_static"))
