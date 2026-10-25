@@ -1,0 +1,61 @@
+{
+  "description": "checked_in workload, per-slice RNG streams.",
+  "simulation": {
+    "total_prbs": 100,
+    "num_timesteps": 200,
+    "random_seed": 42
+  },
+  "rng_mode": "per_slice",
+  "sla_mode": "legacy",
+  "slices": [
+    {
+      "name": "URLLC",
+      "slice_type": "urllc",
+      "initial_prbs": 40,
+      "queue_capacity": 200,
+      "service_rate": 1.5,
+      "sla_type": "latency",
+      "sla_threshold": 5.0,
+      "traffic_params": {
+        "mean_arrival": 20,
+        "burst_prob": 0.1,
+        "burst_mult": 3.0
+      }
+    },
+    {
+      "name": "eMBB",
+      "slice_type": "embb",
+      "initial_prbs": 40,
+      "queue_capacity": 500,
+      "service_rate": 1.0,
+      "sla_type": "throughput",
+      "sla_threshold": 30.0,
+      "traffic_params": {
+        "mean_arrival": 35,
+        "burst_prob": 0.15,
+        "burst_mult": 2.5
+      }
+    },
+    {
+      "name": "IoT",
+      "slice_type": "iot",
+      "initial_prbs": 20,
+      "queue_capacity": 300,
+      "service_rate": 0.8,
+      "sla_type": "relaxed",
+      "sla_threshold": 0.0,
+      "traffic_params": {
+        "mean_arrival": 12,
+        "burst_prob": 0.05,
+        "burst_mult": 2.0
+      }
+    }
+  ],
+  "meta": {
+    "mode": "legacy",
+    "reallocation_step": 5,
+    "fairness_decay": 0.02,
+    "min_prbs_per_slice": 5
+  },
+  "name": "checked_in_ps"
+}

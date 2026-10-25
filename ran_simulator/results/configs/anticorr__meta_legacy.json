@@ -1,0 +1,97 @@
+{
+  "description": "W4: W2 with anti-correlated URLLC/eMBB phases every 50 steps.",
+  "simulation": {
+    "total_prbs": 100,
+    "num_timesteps": 200,
+    "random_seed": 42
+  },
+  "rng_mode": "per_slice",
+  "sla_mode": "demand_aware",
+  "slices": [
+    {
+      "name": "URLLC",
+      "slice_type": "urllc",
+      "initial_prbs": 40,
+      "queue_capacity": 200,
+      "service_rate": 1.5,
+      "sla_type": "latency",
+      "sla_threshold": 2.0,
+      "traffic_params": {
+        "mean_arrival": 32,
+        "burst_prob": 0.21,
+        "burst_mult": 3.5,
+        "phases": [
+          [
+            0,
+            1.0
+          ],
+          [
+            50,
+            1.8
+          ],
+          [
+            100,
+            0.6
+          ],
+          [
+            150,
+            1.8
+          ]
+        ]
+      }
+    },
+    {
+      "name": "eMBB",
+      "slice_type": "embb",
+      "initial_prbs": 40,
+      "queue_capacity": 500,
+      "service_rate": 1.0,
+      "sla_type": "throughput",
+      "sla_threshold": 38.0,
+      "traffic_params": {
+        "mean_arrival": 32,
+        "burst_prob": 0.19,
+        "burst_mult": 2.8,
+        "phases": [
+          [
+            0,
+            1.0
+          ],
+          [
+            50,
+            0.5
+          ],
+          [
+            100,
+            1.4
+          ],
+          [
+            150,
+            0.5
+          ]
+        ]
+      }
+    },
+    {
+      "name": "IoT",
+      "slice_type": "iot",
+      "initial_prbs": 20,
+      "queue_capacity": 300,
+      "service_rate": 0.8,
+      "sla_type": "relaxed",
+      "sla_threshold": 0.0,
+      "traffic_params": {
+        "mean_arrival": 10,
+        "burst_prob": 0.155,
+        "burst_mult": 2.4
+      }
+    }
+  ],
+  "meta": {
+    "mode": "legacy",
+    "reallocation_step": 5,
+    "fairness_decay": 0.02,
+    "min_prbs_per_slice": 5
+  },
+  "name": "anticorr"
+}

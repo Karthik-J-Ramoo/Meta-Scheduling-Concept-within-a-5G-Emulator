@@ -1,0 +1,64 @@
+{
+  "description": "W1: CSV-fitted workload (overloaded, mean demand 123.6 PRBs).",
+  "simulation": {
+    "total_prbs": 100,
+    "num_timesteps": 200,
+    "random_seed": 42
+  },
+  "rng_mode": "per_slice",
+  "sla_mode": "legacy",
+  "slices": [
+    {
+      "name": "URLLC",
+      "slice_type": "urllc",
+      "initial_prbs": 40,
+      "queue_capacity": 200,
+      "service_rate": 1.5,
+      "sla_type": "latency",
+      "sla_threshold": 2.0,
+      "traffic_params": {
+        "mean_arrival": 32,
+        "burst_prob": 0.21,
+        "burst_mult": 3.5
+      }
+    },
+    {
+      "name": "eMBB",
+      "slice_type": "embb",
+      "initial_prbs": 40,
+      "queue_capacity": 500,
+      "service_rate": 1.0,
+      "sla_type": "throughput",
+      "sla_threshold": 38.0,
+      "traffic_params": {
+        "mean_arrival": 48,
+        "burst_prob": 0.19,
+        "burst_mult": 2.8
+      }
+    },
+    {
+      "name": "IoT",
+      "slice_type": "iot",
+      "initial_prbs": 20,
+      "queue_capacity": 300,
+      "service_rate": 0.8,
+      "sla_type": "relaxed",
+      "sla_threshold": 0.0,
+      "traffic_params": {
+        "mean_arrival": 17.5,
+        "burst_prob": 0.155,
+        "burst_mult": 2.4
+      }
+    }
+  ],
+  "meta": {
+    "mode": "fixed",
+    "reallocation_step": 5,
+    "fairness_decay": 0.02,
+    "min_prbs_per_slice": 10,
+    "need_margin": 1,
+    "early_warning": 0.5,
+    "throughput_reservation": "always"
+  },
+  "name": "csv_fitted"
+}
