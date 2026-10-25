@@ -100,7 +100,7 @@ def run_episode(
     else:
         traffic = build_traffic(cfg, slices, seed)
     du = DUScheduler()
-    checker = SLAChecker()
+    checker = SLAChecker(mode=cfg.get("sla_mode", "legacy"))
     meta = build_meta_scheduler(cfg) if policy == "meta" else None
 
     history: list[list[SliceMetrics]] = []

@@ -11,6 +11,14 @@ Design rationale
 * The class is **stateless** – it evaluates the current timestep's metrics
   only, making it easy to swap in a predictive checker (e.g. ChaosNet-based)
   that looks at a sliding window instead.
+* Two modes for throughput SLAs:
+    - ``legacy``       – violated iff ``served < threshold``.  This is false
+      when the slice simply had less than ``threshold`` packets to send, and
+      cannot detect starvation of a saturated queue beyond the threshold.
+    - ``demand_aware`` – violated iff the slice *offered* at least
+      ``threshold`` packets (``queue_before + arrivals``) and was served
+      fewer than ``threshold``.  A minimum-service SLA for IoT (e.g. 12
+      pkts/ts when backlogged) is a throughput SLA in this mode.
 
 Extensibility hook
 ------------------
@@ -38,7 +46,19 @@ class SLAChecker:
 
     For each slice it tests the relevant metric against the configured
     threshold and returns whether the SLA is **violated**.
+
+    Parameters
+    ----------
+    mode : str
+        ``"legacy"`` or ``"demand_aware"`` (throughput SLAs only).
     """
+
+    MODES = ("legacy", "demand_aware")
+
+    def __init__(self, mode: str = "legacy") -> None:
+        if mode not in self.MODES:
+            raise ValueError(f"SLA mode must be one of {self.MODES}, got {mode!r}")
+        self.mode = mode
 
     def check_all(
         self,
@@ -94,19 +114,29 @@ class SLAChecker:
         SLA rules
         ---------
         * **latency**   – violated when ``latency > sla_threshold``
-        * **throughput** – violated when ``throughput < sla_threshold``
+        * **throughput** – legacy: violated when ``throughput < sla_threshold``;
+          demand_aware: violated when ``offered >= sla_threshold`` and
+          ``served < sla_threshold``
         * **relaxed**    – never violated (IoT best-effort)
         """
         if s.sla_type == "latency":
             return snap.latency > s.sla_threshold
 
         if s.sla_type == "throughput":
+            if self.mode == "demand_aware":
+                return (self.offered(snap) >= s.sla_threshold
+                        and snap.served < s.sla_threshold)
             return snap.throughput < s.sla_threshold
 
         # "relaxed" or unknown → never violated
         return False
 
     # ── helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def offered(snap: SliceMetrics) -> int:
+        """Packets the slice could have sent this step: queue_before + arrivals."""
+        return snap.queue_length + snap.served + snap.dropped
 
     @staticmethod
     def _metric_value(s: NetworkSlice, snap: SliceMetrics) -> float:
