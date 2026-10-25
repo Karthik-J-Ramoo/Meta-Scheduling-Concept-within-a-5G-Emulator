@@ -91,10 +91,15 @@ SLICES: list[dict] = [
 # ---------------------------------------------------------------------------
 # Meta-scheduler tunables
 # ---------------------------------------------------------------------------
+# Defaults for the fixed allocator (paper Table 3).  The legacy allocator used
+# for the original runs is config.experiments.LEGACY_META (floor 5).
 META_SCHEDULER: dict = {
-    "reallocation_step": 5,     # PRBs to shift per adjustment
-    "fairness_decay": 0.02,     # rate at which allocations drift back to default
-    "min_prbs_per_slice": 5,    # floor – never starve a slice completely
+    "mode": "fixed",            # "fixed" | "legacy" (see core/meta_scheduler.py)
+    "reallocation_step": 5,     # PRBs added to a violated slice per step
+    "fairness_decay": 0.02,     # restore max(1, ceil(0.02·|diff|)) PRBs/step toward initial
+    "min_prbs_per_slice": 10,   # floor – never starve a slice completely
+    "need_margin": 1,           # PRBs added to a non-zero SLA requirement
+    "early_warning": 0.5,       # boost URLLC when latency > 0.5 × threshold (None: off)
 }
 
 # ---------------------------------------------------------------------------

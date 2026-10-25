@@ -69,6 +69,9 @@ def build_meta_scheduler(cfg: dict) -> MetaScheduler:
         reallocation_step=meta["reallocation_step"],
         fairness_decay=meta["fairness_decay"],
         min_prbs=meta["min_prbs_per_slice"],
+        mode=meta["mode"],
+        early_warning=meta.get("early_warning"),
+        need_margin=meta.get("need_margin", 0),
     )
 
 

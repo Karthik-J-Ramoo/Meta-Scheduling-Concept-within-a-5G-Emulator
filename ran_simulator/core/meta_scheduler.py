@@ -16,6 +16,19 @@ Design rationale
     4. Apply a gentle *fairness decay* that nudges allocations back toward
        their initial (default) shares when all SLAs are satisfied.
     5. Clamp the total to ``total_prbs`` (hard budget constraint).
+* ``mode="fixed"`` (default) replaces steps 2-5 with an exact allocator:
+    - every slice gets a *requirement* – the PRBs its SLA needs next step,
+      estimated from its queue plus the last arrivals (plus ``need_margin``);
+    - a violated slice is boosted by ``reallocation_step`` and never shrinks;
+    - a donor is never cut below ``min(current, requirement)``;
+    - non-violated slices move toward their initial shares every step by
+      ``max(1, ceil(decay * |diff|))`` PRBs (the legacy ``int(round(...))``
+      is 0 for |diff| < 25, so allocations ratcheted);
+    - the budget is met exactly by integer largest-remainder apportioning,
+      cutting donor slack first, then boost, then requirement slack;
+    - optional early warning: a latency slice whose latency exceeds
+      ``early_warning * threshold`` is boosted before it violates.
+  ``mode="legacy"`` keeps the original algorithm bit-for-bit.
 * The class exposes a clean ``allocate(slices, violations) -> dict`` interface
   so it can be **swapped out** for an Active-Inference agent or any other
   decision-making module without touching the rest of the simulator.
@@ -32,7 +45,8 @@ Subclass ``MetaScheduler`` and override ``allocate()`` to plug in:
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Sequence
+import math
+from typing import Any, Dict, Optional, Sequence
 
 from config.simulation_config import META_SCHEDULER, SIMULATION
 from core.slice import NetworkSlice
@@ -55,7 +69,19 @@ class MetaScheduler:
         Rate at which allocations drift back to default shares.
     min_prbs : int
         Minimum PRBs any single slice can hold.
+    mode : str
+        ``"fixed"`` or ``"legacy"`` (see module docstring).
+    early_warning : float or None
+        Fixed mode: boost a latency slice once latency exceeds this fraction
+        of its threshold.  ``None`` disables it.
+    need_margin : int
+        Fixed mode: PRBs added to a non-zero SLA requirement.
+
+    ``None`` means "take the value from config.META_SCHEDULER"; an explicit
+    0 is honoured.
     """
+
+    MODES = ("fixed", "legacy")
 
     def __init__(
         self,
@@ -63,15 +89,28 @@ class MetaScheduler:
         reallocation_step: int | None = None,
         fairness_decay: float | None = None,
         min_prbs: int | None = None,
+        mode: str | None = None,
+        early_warning: Optional[float] = None,
+        need_margin: int | None = None,
     ) -> None:
-        self.total_prbs = total_prbs or SIMULATION["total_prbs"]
-        self.realloc_step = reallocation_step or META_SCHEDULER["reallocation_step"]
-        self.fairness_decay = fairness_decay or META_SCHEDULER["fairness_decay"]
-        self.min_prbs = min_prbs or META_SCHEDULER["min_prbs_per_slice"]
+        def pick(value, key):
+            return META_SCHEDULER[key] if value is None else value
+
+        self.total_prbs = SIMULATION["total_prbs"] if total_prbs is None else total_prbs
+        self.realloc_step = pick(reallocation_step, "reallocation_step")
+        self.fairness_decay = pick(fairness_decay, "fairness_decay")
+        self.min_prbs = pick(min_prbs, "min_prbs_per_slice")
+        self.mode = pick(mode, "mode")
+        self.early_warning = early_warning
+        self.need_margin = pick(need_margin, "need_margin")
+        if self.mode not in self.MODES:
+            raise ValueError(f"mode must be one of {self.MODES}, got {self.mode!r}")
 
         logger.info(
-            "MetaScheduler │ total=%d  step=%d  decay=%.3f  floor=%d",
-            self.total_prbs, self.realloc_step, self.fairness_decay, self.min_prbs,
+            "MetaScheduler │ mode=%s  total=%d  step=%d  decay=%.3f  floor=%d  "
+            "early_warning=%s  margin=%d",
+            self.mode, self.total_prbs, self.realloc_step, self.fairness_decay,
+            self.min_prbs, self.early_warning, self.need_margin,
         )
 
     # ── public interface ──────────────────────────────────────────────
@@ -83,7 +122,149 @@ class MetaScheduler:
         timestep: int,
     ) -> Dict[str, int]:
         """
-        Decide PRB allocation for the next timestep.
+        Decide PRB allocation for the next timestep and write it back to
+        ``slice.allocated_prbs``.  Nothing else on the slices is modified,
+        and the scheduler itself keeps no state between calls.
+        """
+        if self.mode == "legacy":
+            return self._allocate_legacy(slices, violations, timestep)
+
+        allocs = self.plan(slices, violations)
+        for s in slices:
+            s.allocated_prbs = allocs[s.name]
+        logger.debug(
+            "t=%d │ MetaSched │ final allocs: %s  (sum=%d)",
+            timestep, allocs, sum(allocs.values()),
+        )
+        return allocs
+
+    # ── fixed allocator ───────────────────────────────────────────────
+
+    def requirement(self, s: NetworkSlice) -> int:
+        """
+        PRBs slice *s* needs next step to meet its SLA, assuming next-step
+        arrivals equal this step's (``offered = queue + arrivals``).
+
+        * latency  L: backlog after service ≤ L·P·r  ⇔  P ≥ offered / (r(1+L))
+        * throughput T: serve min(T, offered)        ⇔  P ≥ min(T, offered) / r
+        * relaxed: 0
+        A non-zero requirement gets ``need_margin`` extra PRBs.
+        """
+        offered = s.queue + s.arrivals
+        r = s.service_rate
+        if s.sla_type == "latency":
+            need = math.ceil(offered / (r * (1.0 + s.sla_threshold)) - 1e-9)
+        elif s.sla_type == "throughput":
+            need = math.ceil(min(s.sla_threshold, offered) / r - 1e-9)
+        else:
+            need = 0
+        return need + self.need_margin if need > 0 else 0
+
+    def triggered(self, s: NetworkSlice, violated: bool) -> bool:
+        """Violated, or (early warning) latency above the warning level."""
+        if violated:
+            return True
+        return (self.early_warning is not None and s.sla_type == "latency"
+                and s.latency > self.early_warning * s.sla_threshold)
+
+    def plan(
+        self,
+        slices: Sequence[NetworkSlice],
+        violations: Dict[str, bool],
+    ) -> Dict[str, int]:
+        """Pure function of the slice state: the next allocation (fixed mode)."""
+        names = [s.name for s in slices]
+        old = {s.name: s.allocated_prbs for s in slices}
+        target = {s.name: s.initial_prbs for s in slices}
+        protect = {s.name: max(self.min_prbs, self.requirement(s)) for s in slices}
+        trig = {s.name: self.triggered(s, violations.get(s.name, False)) for s in slices}
+
+        desired: Dict[str, int] = {}
+        lower: Dict[str, int] = {}
+        for n in names:
+            if violations.get(n, False):
+                lower[n] = old[n]                       # never shrink a violated slice
+            else:
+                lower[n] = max(self.min_prbs, min(old[n], protect[n]))
+            if trig[n]:
+                desired[n] = max(old[n] + self.realloc_step, protect[n])
+            else:
+                desired[n] = max(protect[n], self._toward(old[n], target[n]))
+            desired[n] = max(desired[n], lower[n])
+
+        excess = sum(desired.values()) - self.total_prbs
+        if excess > 0:
+            # Cut in tiers: donor slack above requirement, then boost above
+            # requirement, then anything above the lower bound.
+            keep = {n: max(lower[n], protect[n]) for n in names}
+            tiers = [
+                {n: desired[n] - keep[n] if not trig[n] else 0 for n in names},
+                {n: desired[n] - keep[n] if trig[n] else 0 for n in names},
+            ]
+            for caps in tiers:
+                excess -= self._take(desired, caps, excess, names)
+            caps = {n: desired[n] - lower[n] for n in names}
+            excess -= self._take(desired, caps, excess, names)
+            if excess > 0:  # unreachable: sum(lower) <= sum(old) == total
+                raise RuntimeError(f"PRB budget infeasible by {excess}")
+        elif excess < 0:
+            surplus = -excess
+            # First fill slices that sit below their initial share, then
+            # spread the rest by initial shares.
+            deficit = {n: max(0, target[n] - desired[n]) for n in names}
+            surplus -= self._give(desired, deficit, surplus, names)
+            if surplus > 0:
+                self._give(desired, {n: target[n] for n in names}, surplus, names,
+                           capped=False)
+        return desired
+
+    def _toward(self, current: int, target: int) -> int:
+        """Move *current* toward *target* by max(1, ceil(decay·|diff|))."""
+        diff = target - current
+        if diff == 0 or self.fairness_decay <= 0:
+            return current
+        step = max(1, math.ceil(round(abs(diff) * self.fairness_decay, 9)))
+        return current + int(math.copysign(min(step, abs(diff)), diff))
+
+    @staticmethod
+    def _apportion(amount: int, weights: Dict[str, int], names: Sequence[str]) -> Dict[str, int]:
+        """Split integer *amount* ∝ *weights* (largest remainder, exact)."""
+        total = sum(weights[n] for n in names)
+        if amount <= 0 or total <= 0:
+            return {n: 0 for n in names}
+        share = {n: amount * weights[n] // total for n in names}
+        order = sorted(names, key=lambda n: (-(amount * weights[n] % total), names.index(n)))
+        for n in order[: amount - sum(share.values())]:
+            share[n] += 1
+        return share
+
+    def _take(self, allocs, caps, amount, names) -> int:
+        """Remove up to *amount* from *allocs*, at most caps[n] each."""
+        amount = min(max(amount, 0), sum(caps.values()))
+        cut = self._apportion(amount, caps, names)
+        for n in names:
+            allocs[n] -= cut[n]
+        return amount
+
+    def _give(self, allocs, weights, amount, names, capped=True) -> int:
+        """Add up to *amount* to *allocs* ∝ weights (capped at weights[n])."""
+        if capped:
+            amount = min(amount, sum(weights.values()))
+        add = self._apportion(amount, weights, names)
+        for n in names:
+            allocs[n] += add[n]
+        return sum(add.values())
+
+    # ── legacy allocator (initial commit, kept bit-for-bit) ───────────
+
+    def _allocate_legacy(
+        self,
+        slices: Sequence[NetworkSlice],
+        violations: Dict[str, bool],
+        timestep: int,
+    ) -> Dict[str, int]:
+        """
+        Decide PRB allocation for the next timestep (legacy algorithm).
 
         Parameters
         ----------
