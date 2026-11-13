@@ -13,7 +13,12 @@ Design rationale
 * The class is deliberately stateless across timesteps (no memory / correlation)
   so it can be trivially swapped for a Markov-modulated or trace-driven source
   later.
-* Accepts a ``numpy.random.Generator`` for reproducibility.
+* Accepts a ``numpy.random.Generator`` for reproducibility.  Give each slice
+  its own stream (``SeedSequence(seed).spawn``) to make arrivals independent
+  of the policy and of the other slices; the legacy setup shares one RNG.
+* Optional ``phases`` in ``traffic_params`` – a list of ``[start_step, mult]``
+  – scale ``mean_arrival`` from ``start_step`` on (regime shifts).
+* ``TraceTraffic`` replays recorded arrivals (e.g. a metrics.csv column).
 
 Extensibility hook
 ------------------
@@ -54,6 +59,7 @@ class TrafficGenerator:
         self.mean_arrival: float = params["mean_arrival"]
         self.burst_prob: float = params["burst_prob"]
         self.burst_mult: float = params["burst_mult"]
+        self.phases: list = sorted(params.get("phases", []))
 
         logger.debug(
             "TrafficGen[%s] │ λ=%.1f  burst_p=%.2f  burst_x=%.1f",
@@ -73,9 +79,8 @@ class TrafficGenerator:
         """
         # Decide whether this timestep experiences a traffic burst.
         is_burst: bool = self.rng.random() < self.burst_prob
-        effective_lambda = (
-            self.mean_arrival * self.burst_mult if is_burst else self.mean_arrival
-        )
+        base_lambda = self.mean_arrival * self.phase_multiplier(timestep)
+        effective_lambda = base_lambda * self.burst_mult if is_burst else base_lambda
 
         arrivals: int = int(self.rng.poisson(lam=effective_lambda))
 
@@ -86,3 +91,21 @@ class TrafficGenerator:
             )
 
         return arrivals
+
+    def phase_multiplier(self, timestep: int) -> float:
+        """Multiplier on ``mean_arrival`` of the phase active at *timestep*."""
+        mult = 1.0
+        for start, m in self.phases:
+            if timestep >= start:
+                mult = m
+        return mult
+
+
+class TraceTraffic:
+    """Replay a recorded arrival sequence; same interface as TrafficGenerator."""
+
+    def __init__(self, arrivals) -> None:
+        self.arrivals = [int(a) for a in arrivals]
+
+    def generate(self, timestep: int) -> int:
+        return self.arrivals[timestep]
