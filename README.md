@@ -362,7 +362,7 @@ python main.py [--steps N] [--seed S]
 
 ### `config/simulation_config.py` – Configuration Registry
 
-**Design principle**: All knobs in one place for reproducibility and experiment diffing.
+**Design principle**: All knobs in one place for reproducibility and experiment diffing
 
 **Sections**:
 - `SIMULATION`: Global parameters (total PRBs, timesteps, seed)
